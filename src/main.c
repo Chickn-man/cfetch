@@ -8,8 +8,6 @@
 #include <sys/utsname.h>
 #include <sys/stat.h>
 
-struct utsname uts;
-
 typedef struct {
   char *NAME;
   char *PRETTY_NAME;
@@ -22,6 +20,8 @@ typedef struct {
   int avail;
 } MEMINFO;
 
+void color();
+
 OS_RELEASE parseOSRELEASE(char *osRFile, size_t size); // parse the /etc/os-release file if it wasn't obvious.
 
 MEMINFO parseMemInfo(char *meminfoStr, size_t size); // parse the /proc/meminfo file if it wasn't obvious.
@@ -29,10 +29,9 @@ MEMINFO parseMemInfo(char *meminfoStr, size_t size); // parse the /proc/meminfo 
 int main(int argc, char **argv) {
   char user[8] = "user";
 
-  char *err = "no error message set"; // default error message
+  struct utsname uts;
 
-  // uname
-  uname(&uts);
+  char *err = "no error message set"; // default error message
 
   // files
   //   /etc/os-release
@@ -53,22 +52,44 @@ int main(int argc, char **argv) {
   MEMINFO memInfo = parseMemInfo(memInfoStr, mIStat.st_size);
   free(memInfoStr);
 
+  // uname
+  uname(&uts);
+
   // username
   getlogin_r(user, 8);
 
-  printf("\033[1;31m%s\033[1;30m@\033[1;31m%s\n\033[0;0m", user, uts.nodename);
-  printf("\033[0;38m-----------\n");
-  printf("\033[1;31mOS\033[1;0m: %s %s\n", release.PRETTY_NAME, uts.machine);
-  printf("\033[1;31mKernel\033[1;0m: %s\n", uts.release);
-  printf("\033[1;31mMemory\033[1;0m: %dMiB / %dMiB", (memInfo.total - memInfo.avail) / 1024, memInfo.total / 1024);
+  // print info
+  printf("\e[1;31m%s\e[1;90m@\e[1;31m%s\n\e[0;0m", user, uts.nodename);
+  printf("\e[1;90m-----------\n");
+  printf("\e[1;31mOS\e[1;0m: %s %s\n", release.PRETTY_NAME, uts.machine);
+  printf("\e[1;31mKernel\e[1;0m: %s\n", uts.release);
+  printf("\e[1;31mMemory\e[1;0m: %dMiB / %dMiB\n", (memInfo.total - memInfo.avail) / 1024, memInfo.total / 1024);
 
-  printf("\n");
+  color();
+
+  printf("\e[0m\n");
   return 0;
 
   ERROR: {
     fprintf(stderr, "err: %s\n", err);
     return -1;
   }
+}
+
+void color() {
+  printf("\e[0m\n");
+
+  for (uint8_t i = 0; i < 8; i++) { // first row of colors
+    printf("\e[0;4%dm   ", i);
+  }
+
+  printf("\e[0m\n");
+
+  for (uint8_t i = 0; i < 8; i++) { // second row of colors
+    printf("\e[0;10%dm   ", i);
+  }
+
+  printf("\e[0m");
 }
 
 OS_RELEASE parseOSRELEASE(char *osRStr, size_t size) {
