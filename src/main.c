@@ -3,7 +3,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdint.h>
-#include "bool.h"
+#include <stdbool.h>
 
 #include <sys/utsname.h>
 #include <sys/stat.h>
@@ -17,9 +17,14 @@ typedef struct {
   char *LOGO;
 } OS_RELEASE;
 
+typedef struct {
+  int total;
+  int avail;
+} MEMINFO;
+
 OS_RELEASE parseOSRELEASE(char *osRFile, size_t size); // parse the /etc/os-release file if it wasn't obvious.
 
-size_t strsize(char *str); // get the size of a string str
+MEMINFO parseMemInfo(char *meminfoStr, size_t size); // parse the /proc/meminfo file if it wasn't obvious.
 
 int main(int argc, char **argv) {
   char user[8] = "user";
@@ -39,6 +44,15 @@ int main(int argc, char **argv) {
   OS_RELEASE release = parseOSRELEASE(osRelease, osRStat.st_size);
   free(osRelease);
 
+  //   /proc/meminfo
+  FILE *memInfoFile = fopen("/proc/meminfo", "r");
+  struct stat mIStat;
+  stat("/etc/os-release", &mIStat);
+  char *memInfoStr = malloc(mIStat.st_size*sizeof(char));
+  fread(memInfoStr, sizeof(char), mIStat.st_size, memInfoFile);
+  MEMINFO memInfo = parseMemInfo(memInfoStr, mIStat.st_size);
+  free(memInfoStr);
+
   // username
   getlogin_r(user, 8);
 
@@ -46,6 +60,7 @@ int main(int argc, char **argv) {
   printf("\033[0;38m-----------\n");
   printf("\033[1;31mOS\033[1;0m: %s %s\n", release.PRETTY_NAME, uts.machine);
   printf("\033[1;31mKernel\033[1;0m: %s\n", uts.release);
+  printf("\033[1;31mMemory\033[1;0m: %dMiB / %dMiB", (memInfo.total - memInfo.avail) / 1024, memInfo.total / 1024);
 
   printf("\n");
   return 0;
@@ -64,7 +79,7 @@ OS_RELEASE parseOSRELEASE(char *osRStr, size_t size) {
 
   bool c; // whether the value is comma wraped or not
 
-  for (int p = 0; p < size; p++) {
+  for (uint16_t p = 0; p < size; p++) {
     for (uint8_t i = 0; i < 64; i++) nameStr[i] = 0; // zero out nameStr
     for (uint8_t i = 0; i < 128; i++) valStr[i] = 0; // zero out valStr
 
@@ -73,7 +88,7 @@ OS_RELEASE parseOSRELEASE(char *osRStr, size_t size) {
       p++;
     }
 
-    if (osRStr[p] == '"') c = true; // check for comma wrap
+    if (osRStr[p] == '\"') c = true; // check for comma wrap
 
     p++;
 
@@ -83,22 +98,22 @@ OS_RELEASE parseOSRELEASE(char *osRStr, size_t size) {
     }
 
     if (c) { // remove comma
-      valStr++; 
-      valStr[strsize(valStr) - 1] = 0;
+      valStr++;
+      valStr[strlen(valStr) - 1] = 0;
     }
 
     // check for what to assign valStr to
     if (strcmp(nameStr, "NAME") == 0) {
-      ret.NAME = malloc(strsize(valStr));
+      ret.NAME = malloc(strlen(valStr));
       strcpy(ret.NAME, valStr);
     } else if (strcmp(nameStr, "PRETTY_NAME") == 0) {
-      ret.PRETTY_NAME = malloc(strsize(valStr));
+      ret.PRETTY_NAME = malloc(strlen(valStr));
       strcpy(ret.PRETTY_NAME, valStr);
     } else if (strcmp(nameStr, "ID") == 0) {
-      ret.ID = malloc(strsize(valStr));
+      ret.ID = malloc(strlen(valStr));
       strcpy(ret.ID, valStr);
     } else if (strcmp(nameStr, "LOGO") == 0) {
-      ret.LOGO = malloc(strsize(valStr));
+      ret.LOGO = malloc(strlen(valStr));
       strcpy(ret.LOGO, valStr);
     }
   }
@@ -108,12 +123,43 @@ OS_RELEASE parseOSRELEASE(char *osRStr, size_t size) {
   return ret;
 }
 
-char **parseConfig(FILE *confFile) {
+MEMINFO parseMemInfo(char *memInfoStr, size_t size) {
+  MEMINFO ret;
 
-}
+  char *nameStr = calloc(1, 64);
+  char *valStr = calloc(1, 128);
 
-size_t strsize(char *str) {
-  int i = 0;
-  for (; str[i]; i++) {} // find length (anything above 0 is truthy)
-  return i;
+  bool c; // whether the value is comma wraped or not
+
+  for (uint16_t p = 0; p < size; p++) {
+    for (uint8_t i = 0; i < 64; i++) nameStr[i] = 0; // zero out nameStr
+    for (uint8_t i = 0; i < 128; i++) valStr[i] = 0; // zero out valStr
+
+    for (int np = 0; memInfoStr[p] != ':'; np++) { // get name
+      nameStr[np] = memInfoStr[p];
+      p++;
+    }
+
+    while (memInfoStr[p] == ' ') p++;
+    p++;
+
+    for (int np = 0; memInfoStr[p] != '\n'; np++) { // get value
+      valStr[np] = memInfoStr[p];
+      p++;
+    }
+
+    if (c) { // remove comma
+      valStr++;
+      valStr[strlen(valStr) - 1] = 0;
+    }
+
+    // check for what to assign valStr to
+    if (strcmp(nameStr, "MemTotal") == 0) {
+      ret.total = atoi(valStr);
+    } else if (strcmp(nameStr, "MemAvailable") == 0) {
+      ret.avail = atoi(valStr);
+    }
+  }
+
+  return ret;
 }
