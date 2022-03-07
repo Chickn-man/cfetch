@@ -31,7 +31,7 @@ int main(int argc, char **argv) {
 
   // files
   //   /etc/os-release
-  FILE *osReleaseFile = fopen("./os-release", "r");
+  FILE *osReleaseFile = fopen("/etc/os-release", "r");
   struct stat osRStat;
   stat("/etc/os-release", &osRStat);
   char *osRelease = malloc(osRStat.st_size*sizeof(char));
