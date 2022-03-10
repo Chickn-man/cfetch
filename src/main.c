@@ -4,7 +4,10 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <errno.h>
+#include <fcntl.h>
 
+#include <sys/mman.h>
 #include <sys/utsname.h>
 #include <sys/stat.h>
 
@@ -18,9 +21,10 @@ typedef struct {
 typedef struct {
   int total;
   int avail;
+  int cached;
 } MEMINFO;
 
-void color();
+void color(); // print color blocks
 
 OS_RELEASE parseOSRELEASE(char *osRFile, size_t size); // parse the /etc/os-release file if it wasn't obvious.
 
@@ -35,13 +39,16 @@ int main(int argc, char **argv) {
 
   // files
   //   /etc/os-release
-  FILE *osReleaseFile = fopen("/etc/os-release", "r");
+  int osReleaseFile = open("/etc/os-release", O_RDONLY);
+  if (osReleaseFile == -1) {
+    err = "/etc/os-release";
+    goto ERROR;
+  } 
   struct stat osRStat;
   stat("/etc/os-release", &osRStat);
-  char *osRelease = malloc(osRStat.st_size*sizeof(char));
-  fread(osRelease, sizeof(char), osRStat.st_size, osReleaseFile);
+  char *osRelease = mmap(NULL, osRStat.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, osReleaseFile, 0);
   OS_RELEASE release = parseOSRELEASE(osRelease, osRStat.st_size);
-  free(osRelease);
+  close(osReleaseFile);
 
   //   /proc/meminfo
   FILE *memInfoFile = fopen("/proc/meminfo", "r");
@@ -50,8 +57,9 @@ int main(int argc, char **argv) {
   char *memInfoStr = malloc(mIStat.st_size*sizeof(char));
   fread(memInfoStr, sizeof(char), mIStat.st_size, memInfoFile);
   MEMINFO memInfo = parseMemInfo(memInfoStr, mIStat.st_size);
+  fclose(memInfoFile);
   free(memInfoStr);
-
+  
   // uname
   uname(&uts);
 
@@ -63,15 +71,16 @@ int main(int argc, char **argv) {
   printf("\e[1;90m-----------\n");
   printf("\e[1;31mOS\e[1;0m: %s %s\n", release.PRETTY_NAME, uts.machine);
   printf("\e[1;31mKernel\e[1;0m: %s\n", uts.release);
-  printf("\e[1;31mMemory\e[1;0m: %dMiB / %dMiB\n", (memInfo.total - memInfo.avail) / 1024, memInfo.total / 1024);
+  printf("\e[1;31mMemory\e[1;0m: %dMiB / %dMiB\n", memInfo.total / 1024 - memInfo.avail / 1024, memInfo.total / 1024);
 
   color();
 
-  printf("\e[0m\n");
+  printf("\n");
+
   return 0;
 
   ERROR: {
-    fprintf(stderr, "err: %s\n", err);
+    fprintf(stderr, "%s: %s\n", err, strerror(errno));
     return -1;
   }
 }
@@ -89,7 +98,7 @@ void color() {
     printf("\e[0;10%dm   ", i);
   }
 
-  printf("\e[0m");
+  printf("\e[0m\n");
 }
 
 OS_RELEASE parseOSRELEASE(char *osRStr, size_t size) {
@@ -109,9 +118,9 @@ OS_RELEASE parseOSRELEASE(char *osRStr, size_t size) {
       p++;
     }
 
-    if (osRStr[p] == '\"') c = true; // check for comma wrap
-
     p++;
+
+    if (osRStr[p] == '\"') c = true; // check for comma wrap
 
     for (int np = 0; osRStr[p] != '\n'; np++) { // get value
       valStr[np] = osRStr[p];
@@ -161,7 +170,7 @@ MEMINFO parseMemInfo(char *memInfoStr, size_t size) {
       p++;
     }
 
-    while (memInfoStr[p] == ' ') p++;
+    while (memInfoStr[p] == ' ') {p++;}
     p++;
 
     for (int np = 0; memInfoStr[p] != '\n'; np++) { // get value
@@ -179,6 +188,8 @@ MEMINFO parseMemInfo(char *memInfoStr, size_t size) {
       ret.total = atoi(valStr);
     } else if (strcmp(nameStr, "MemAvailable") == 0) {
       ret.avail = atoi(valStr);
+    } else if (strcmp(nameStr, "Cached") == 0) {
+      ret.cached = atoi(valStr);
     }
   }
 
