@@ -6,10 +6,14 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 
 #include <sys/mman.h>
 #include <sys/utsname.h>
 #include <sys/stat.h>
+
+#include "ansicolors.h"
+#include "../config.h"
 
 typedef struct {
   char *NAME;
@@ -20,11 +24,21 @@ typedef struct {
 
 typedef struct {
   int total;
-  int avail;
+  int free;
+  int buffers;
   int cached;
+  int shmem;
+  int srec;
 } MEMINFO;
 
-void color(); // print color blocks
+void die(char *msg); // print the string at msg, a colon, then the string associated with errno.
+
+char *colors[6];
+void parseColors(); // make colors array based off of colorConf
+
+void info(char *fmt, ...); // printf with special stuff;
+
+void infoCols(); // print color blocks
 
 OS_RELEASE parseOSRELEASE(char *osRFile, size_t size); // parse the /etc/os-release file if it wasn't obvious.
 
@@ -33,19 +47,16 @@ MEMINFO parseMemInfo(char *meminfoStr, size_t size); // parse the /proc/meminfo 
 int main(int argc, char **argv) {
   char user[8] = "user";
 
-  struct utsname uts;
+  struct utsname uts; 
 
   char *err = "no error message set"; // default error message
 
   // files
   //   /etc/os-release
   int osReleaseFile = open("/etc/os-release", O_RDONLY);
-  if (osReleaseFile == -1) {
-    err = "/etc/os-release";
-    goto ERROR;
-  } 
+  if (osReleaseFile == -1) die("/etc/os-release");
   struct stat osRStat;
-  stat("/etc/os-release", &osRStat);
+  fstat(osReleaseFile, &osRStat);
   char *osRelease = mmap(NULL, osRStat.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, osReleaseFile, 0);
   OS_RELEASE release = parseOSRELEASE(osRelease, osRStat.st_size);
   close(osReleaseFile);
@@ -53,8 +64,9 @@ int main(int argc, char **argv) {
   //   /proc/meminfo
   FILE *memInfoFile = fopen("/proc/meminfo", "r");
   struct stat mIStat;
-  stat("/etc/os-release", &mIStat);
-  char *memInfoStr = malloc(mIStat.st_size*sizeof(char));
+  stat("/proc/meminfo", &mIStat);
+  mIStat.st_size = 712;
+  char *memInfoStr = calloc(1, mIStat.st_size*sizeof(char));
   fread(memInfoStr, sizeof(char), mIStat.st_size, memInfoFile);
   MEMINFO memInfo = parseMemInfo(memInfoStr, mIStat.st_size);
   fclose(memInfoFile);
@@ -66,26 +78,90 @@ int main(int argc, char **argv) {
   // username
   getlogin_r(user, 8);
 
-  // print info
-  printf("\e[1;31m%s\e[1;90m@\e[1;31m%s\n\e[0;0m", user, uts.nodename);
-  printf("\e[1;90m-----------\n");
-  printf("\e[1;31mOS\e[1;0m: %s %s\n", release.PRETTY_NAME, uts.machine);
-  printf("\e[1;31mKernel\e[1;0m: %s\n", uts.release);
-  printf("\e[1;31mMemory\e[1;0m: %dMiB / %dMiB\n", memInfo.total / 1024 - memInfo.avail / 1024, memInfo.total / 1024);
+  parseColors();
 
-  color();
+  // finaly print the shit
+  printf("%s%s%s@%s%s\n\e[0;0m", colors[0], user, colors[1], colors[0], uts.nodename);
+  printf("%s-----------\n", colors[2]);
+  info("OS %s %s", release.PRETTY_NAME, uts.machine);
+  info("Kernel %s", uts.release);
+  info("Memory %dMiB / %dMiB",
+  (memInfo.total + memInfo.shmem - memInfo.free - memInfo.buffers - memInfo.cached - memInfo.srec) / 1024,
+  memInfo.total / 1024
+  );
+
+  infoCols();
 
   printf("\n");
 
   return 0;
 
   ERROR: {
-    fprintf(stderr, "%s: %s\n", err, strerror(errno));
-    return -1;
+    die(err);
   }
 }
 
-void color() {
+/*
+** print the string at msg, a colon, then the string associated with errno.
+*/
+void die(char *msg) {
+  printf("%s: %s\n", msg, strerror(errno));
+  exit(errno);
+}
+
+/* 
+** make colors array based off of colorConf
+*/
+void parseColors() {
+  for (int i = 0; i < 6; i++) {
+    if (i == 2 || i == 4 || i == 5) {
+      colors[i] = ansiColors[colorConf[i]];
+      continue;
+    }
+    if (bold) colors[i] = ansiColorsBold[colorConf[i]]; else colors[i] = ansiColors[colorConf[i]];
+  }
+}
+
+/* 
+** printf with special stuff;
+*/
+void info(char *fmt, ...) {
+  fputs(colors[3], stdout);
+  int i;
+  for (i = 0; fmt[i] != ' '; i++) {putc(fmt[i], stdout);}
+
+  fputs(colors[4], stdout);
+  putchar(':');
+
+  va_list ap;
+  va_start(ap, fmt);
+
+  fputs(colors[5], stdout);
+  for (char *p = fmt + i; *p; p++) {
+    if (*p != '%') {
+      putchar(*p);
+      continue;
+    }
+    switch (*++p) {
+      case 's':
+        printf(va_arg(ap, char*));
+        break;
+      case 'd':
+        printf("%d", va_arg(ap, int));
+        break;
+      default:
+        putchar(*p);
+        break;
+    }
+  }
+
+  putchar('\n');
+}
+
+/*
+** print color blocks
+*/
+void infoCols() {
   printf("\e[0m\n");
 
   for (uint8_t i = 0; i < 8; i++) { // first row of colors
@@ -104,21 +180,21 @@ void color() {
 OS_RELEASE parseOSRELEASE(char *osRStr, size_t size) {
   OS_RELEASE ret = {"Linux", NULL, "linux", "linux-logo"}; // default return values
 
-  char *nameStr = calloc(1, 64);
-  char *valStr = calloc(1, 128);
+  char *nameStr = malloc(64);
+  char *valStr = malloc(128);
 
   bool c; // whether the value is comma wraped or not
 
   for (uint16_t p = 0; p < size; p++) {
     for (uint8_t i = 0; i < 64; i++) nameStr[i] = 0; // zero out nameStr
-    for (uint8_t i = 0; i < 128; i++) valStr[i] = 0; // zero out valStr
+    for (uint8_t i = 1; i < 128; i++) valStr[i] = 0; // zero out valStr
 
     for (int np = 0; osRStr[p] != '='; np++) { // get name
       nameStr[np] = osRStr[p];
       p++;
     }
 
-    p++;
+    p++; // increment p
 
     if (osRStr[p] == '\"') c = true; // check for comma wrap
 
@@ -127,6 +203,8 @@ OS_RELEASE parseOSRELEASE(char *osRStr, size_t size) {
       p++;
     }
 
+    valStr[strlen(valStr)] = 0;
+
     if (c) { // remove comma
       valStr++;
       valStr[strlen(valStr) - 1] = 0;
@@ -134,16 +212,16 @@ OS_RELEASE parseOSRELEASE(char *osRStr, size_t size) {
 
     // check for what to assign valStr to
     if (strcmp(nameStr, "NAME") == 0) {
-      ret.NAME = malloc(strlen(valStr));
+      ret.NAME = malloc(strlen(valStr) + 1);
       strcpy(ret.NAME, valStr);
     } else if (strcmp(nameStr, "PRETTY_NAME") == 0) {
-      ret.PRETTY_NAME = malloc(strlen(valStr));
+      ret.PRETTY_NAME = malloc(strlen(valStr) + 1);
       strcpy(ret.PRETTY_NAME, valStr);
     } else if (strcmp(nameStr, "ID") == 0) {
-      ret.ID = malloc(strlen(valStr));
+      ret.ID = malloc(strlen(valStr) + 1);
       strcpy(ret.ID, valStr);
     } else if (strcmp(nameStr, "LOGO") == 0) {
-      ret.LOGO = malloc(strlen(valStr));
+      ret.LOGO = malloc(strlen(valStr) + 1);
       strcpy(ret.LOGO, valStr);
     }
   }
@@ -154,42 +232,43 @@ OS_RELEASE parseOSRELEASE(char *osRStr, size_t size) {
 }
 
 MEMINFO parseMemInfo(char *memInfoStr, size_t size) {
-  MEMINFO ret;
+  MEMINFO ret = {0, 0, 0, 0, 0, 0};
 
   char *nameStr = calloc(1, 64);
   char *valStr = calloc(1, 128);
-
-  bool c; // whether the value is comma wraped or not
 
   for (uint16_t p = 0; p < size; p++) {
     for (uint8_t i = 0; i < 64; i++) nameStr[i] = 0; // zero out nameStr
     for (uint8_t i = 0; i < 128; i++) valStr[i] = 0; // zero out valStr
 
     for (int np = 0; memInfoStr[p] != ':'; np++) { // get name
+      if (memInfoStr[p] == 0) return ret;
       nameStr[np] = memInfoStr[p];
       p++;
     }
 
-    while (memInfoStr[p] == ' ') {p++;}
+    while (memInfoStr[p] == ' ') {p++; if (memInfoStr[p] == 0) return ret;}
     p++;
 
     for (int np = 0; memInfoStr[p] != '\n'; np++) { // get value
+      if (memInfoStr[p] == 0) return ret;
       valStr[np] = memInfoStr[p];
       p++;
-    }
-
-    if (c) { // remove comma
-      valStr++;
-      valStr[strlen(valStr) - 1] = 0;
     }
 
     // check for what to assign valStr to
     if (strcmp(nameStr, "MemTotal") == 0) {
       ret.total = atoi(valStr);
-    } else if (strcmp(nameStr, "MemAvailable") == 0) {
-      ret.avail = atoi(valStr);
+    } else if (strcmp(nameStr, "MemFree") == 0) {
+      ret.free = atoi(valStr);
+    } else if (strcmp(nameStr, "Buffers") == 0) {
+      ret.buffers = atoi(valStr);
     } else if (strcmp(nameStr, "Cached") == 0) {
       ret.cached = atoi(valStr);
+    } else if (strcmp(nameStr, "Shmem") == 0) {
+      ret.shmem = atoi(valStr);
+    } else if (strcmp(nameStr, "SReclaimable") == 0) {
+      ret.srec = atoi(valStr);
     }
   }
 
